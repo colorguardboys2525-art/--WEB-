@@ -212,10 +212,13 @@ function renderMenu() {
 async function createSheet() {
   const nameEl = document.getElementById('new-sheet-name');
   const passEl = document.getElementById('new-sheet-pass');
+  const createBtn = document.querySelector('.new-sheet-card-inner .btn-primary');
   const name = nameEl.value.trim();
   const pass = passEl.value;
   if (!name) { nameEl.focus(); return; }
   if (!pass) { alert('パスワードを設定してください。'); passEl.focus(); return; }
+
+  if (createBtn) { createBtn.disabled = true; createBtn.textContent = '作成中...'; }
 
   const sheet = {
     id: uid(), name,
@@ -227,11 +230,26 @@ async function createSheet() {
     draftBgImage: null,
     examDate: '',
   };
-  state.sheets.unshift(sheet);
-  nameEl.value = '';
-  passEl.value = '';
-  saveSheet(sheet);
-  // onSnapshot が自動的に renderMenu() を呼ぶ
+
+  console.log('[createSheet] Firestoreに保存中...', sheet.id, sheet.name);
+  if (!_db()) {
+    alert('Firebase が初期化されていません。ページを再読み込みしてください。');
+    if (createBtn) { createBtn.disabled = false; createBtn.textContent = 'シートを作成'; }
+    return;
+  }
+
+  try {
+    await _setDoc(_doc(_db(), 'sheets', sheet.id), JSON.parse(JSON.stringify(sheet)));
+    console.log('[createSheet] 保存成功:', sheet.id);
+    nameEl.value = '';
+    passEl.value = '';
+    // onSnapshot が自動的に renderMenu() を呼ぶ
+  } catch(e) {
+    console.error('[createSheet] 保存失敗:', e);
+    alert('シートの作成に失敗しました。\nエラー: ' + e.message + '\n\nFirestoreのセキュリティルールを確認してください。');
+  } finally {
+    if (createBtn) { createBtn.disabled = false; createBtn.textContent = 'シートを作成'; }
+  }
 }
 
 function openSheet(id) {
@@ -1232,7 +1250,15 @@ async function initApp() {
   document.getElementById('sheet-list').innerHTML =
     '<div class="empty-state"><p>読み込み中...</p></div>';
 
-  await loadState();
+  try {
+    await loadState();
+    console.log('[App] Firestore 読み込み成功 / シート数:', state.sheets.length);
+  } catch(e) {
+    console.error('[App] Firestore 読み込みエラー:', e);
+    document.getElementById('sheet-list').innerHTML =
+      '<div class="empty-state" style="color:#dc2626"><p>Firestore の読み込みに失敗しました。<br>セキュリティルールを確認してください。<br>' + e.message + '</p></div>';
+    return;
+  }
 
   // リアルタイムリスナー開始（以降の変更は自動で反映）
   startSheetsListener();
