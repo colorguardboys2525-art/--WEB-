@@ -1069,20 +1069,22 @@ function buildPreviewElement(el, cand, sheet) {
 }
 
 function drawRadarChart(canvas, cand, settings) {
-  const ctx   = canvas.getContext('2d');
-  const items = settings.items;
-  const n     = items.length;
-  const cx    = canvas.width  / 2;
-  const cy    = canvas.height / 2;
-  const r     = Math.min(cx, cy) - 24;
+  const ctx    = canvas.getContext('2d');
+  const items  = settings.items;
+  const n      = items.length;
+  const cx     = canvas.width  / 2;
+  const cy     = canvas.height / 2;
+  const r      = Math.min(cx, cy) - 28;
   const maxVal = Math.max(...settings.gradeScale.map(g => g.value));
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   const steps = 5;
+
+  // 同心多角形グリッド
   for (let s = 1; s <= steps; s++) {
     ctx.beginPath();
-    ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1;
+    ctx.strokeStyle = '#d1d5db'; ctx.lineWidth = 0.8;
     for (let i = 0; i < n; i++) {
       const angle = (2 * Math.PI * i / n) - Math.PI / 2;
       const x = cx + (r * s / steps) * Math.cos(angle);
@@ -1090,30 +1092,42 @@ function drawRadarChart(canvas, cand, settings) {
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.closePath(); ctx.stroke();
+
+    // 各リングに数値ラベル（軸の真上＝angle=-π/2 方向に表示）
+    const axisAngle = -Math.PI / 2;
+    const lx = cx + (r * s / steps) * Math.cos(axisAngle);
+    const ly = cy + (r * s / steps) * Math.sin(axisAngle);
+    const numLabel = ((maxVal * s) / steps).toFixed(1).replace(/\.0$/, '');
+    ctx.fillStyle = '#9ca3af';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(numLabel, lx + 10, ly + 3);
   }
 
+  // 軸線（中心から各頂点）
   for (let i = 0; i < n; i++) {
     const angle = (2 * Math.PI * i / n) - Math.PI / 2;
-    ctx.beginPath(); ctx.strokeStyle = '#d1d5db'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 0.8;
     ctx.moveTo(cx, cy);
     ctx.lineTo(cx + r * Math.cos(angle), cy + r * Math.sin(angle));
     ctx.stroke();
   }
 
-  ctx.fillStyle = '#374151'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+  // 項目ラベル（大きめ・黒色）
+  ctx.fillStyle = '#111827'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
   for (let i = 0; i < n; i++) {
     const angle = (2 * Math.PI * i / n) - Math.PI / 2;
-    const lx = cx + (r + 14) * Math.cos(angle);
-    const ly = cy + (r + 14) * Math.sin(angle);
+    const lx = cx + (r + 18) * Math.cos(angle);
+    const ly = cy + (r + 18) * Math.sin(angle);
     ctx.fillText(items[i], lx, ly + 4);
   }
 
+  // データポリゴン（塗りつぶしなし・線のみ）
   const scores = items.map(it => {
     const avg = calcItemAvgDirect(cand, it, settings);
     return avg !== null ? avg : 0;
   });
   ctx.beginPath(); ctx.strokeStyle = '#00B050'; ctx.lineWidth = 2;
-  ctx.fillStyle = 'rgba(0,176,80,.18)';
   for (let i = 0; i < n; i++) {
     const angle = (2 * Math.PI * i / n) - Math.PI / 2;
     const ratio = maxVal > 0 ? scores[i] / maxVal : 0;
@@ -1121,15 +1135,16 @@ function drawRadarChart(canvas, cand, settings) {
     const y = cy + r * ratio * Math.sin(angle);
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
-  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.closePath(); ctx.stroke();
 
+  // マーカー（各頂点に円）
   ctx.fillStyle = '#00B050';
   for (let i = 0; i < n; i++) {
     const angle = (2 * Math.PI * i / n) - Math.PI / 2;
     const ratio = maxVal > 0 ? scores[i] / maxVal : 0;
     const x = cx + r * ratio * Math.cos(angle);
     const y = cy + r * ratio * Math.sin(angle);
-    ctx.beginPath(); ctx.arc(x, y, 3, 0, 2 * Math.PI); ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI); ctx.fill();
   }
 }
 
