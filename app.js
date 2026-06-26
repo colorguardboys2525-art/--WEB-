@@ -163,11 +163,14 @@ function gradeValue(label, gradeScale) {
 }
 function valueToLabel(value, gradeScale) {
   if (value === null || value === undefined) return '-';
-  const sorted = [...gradeScale].sort((a, b) => b.value - a.value);
-  for (const g of sorted) {
-    if (value >= g.value) return g.label;
+  if (!gradeScale.length) return '-';
+  let closest = gradeScale[0];
+  let minDiff = Math.abs(value - gradeScale[0].value);
+  for (const g of gradeScale) {
+    const diff = Math.abs(value - g.value);
+    if (diff < minDiff) { minDiff = diff; closest = g; }
   }
-  return sorted[sorted.length - 1]?.label || '-';
+  return closest.label;
 }
 
 // ===================== SCREEN NAV =====================
