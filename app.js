@@ -169,19 +169,19 @@ function valueToLabel(value, gradeScale) {
   // B+:2.25<=x<2.65, B:1.85<=x<2.25, B-:1.65<=x<1.85
   // C+:1.25<=x<1.65, C:x<1.25
   const boundaries = [
-    { label: 'SS',  lower: 4.75 },
-    { label: 'S+',  lower: 4.30 },
-    { label: 'S',   lower: 3.85 },
-    { label: 'S-',  lower: 3.65 },
-    { label: 'A+',  lower: 3.25 },
-    { label: 'A',   lower: 2.85 },
-    { label: 'A-',  lower: 2.65 },
-    { label: 'B+',  lower: 2.25 },
-    { label: 'B',   lower: 1.85 },
-    { label: 'B-',  lower: 1.65 },
-    { label: 'C+',  lower: 1.25 },
-    { label: 'C',   lower: -Infinity },
-  ];
+  { label: 'SS', lower: 4.75 },
+  { label: 'S⁺', lower: 4.30 },
+  { label: 'S',  lower: 3.85 },
+  { label: 'S-', lower: 3.65 },
+  { label: 'A⁺', lower: 3.25 },
+  { label: 'A',  lower: 2.85 },
+  { label: 'A-', lower: 2.65 },
+  { label: 'B⁺', lower: 2.25 },
+  { label: 'B',  lower: 1.85 },
+  { label: 'B-', lower: 1.65 },
+  { label: 'C⁺', lower: 1.25 },
+  { label: 'C',  lower: -Infinity },
+];
   // gradeScaleにないラベルが混入しても動くよう、gradeScaleから存在確認
   const labels = new Set(gradeScale.map(g => g.label));
   for (const b of boundaries) {
@@ -461,6 +461,7 @@ function buildGradeTable() {
       ${settings.items.map(it => {
         const itemAvg = calcItemAvg(cand, it, settings);
         const lbl = itemAvg !== null ? valueToLabel(itemAvg, settings.gradeScale) : '-';
+        console.log("lbl=", lbl);
         return `<td style="font-weight:700;color:#065f46">${lbl}<br><small style="font-weight:400;font-size:10px;color:#9ca3af">${itemAvg !== null ? itemAvg.toFixed(2) : '-'}</small></td>`;
       }).join('')}
     </tr>`;
