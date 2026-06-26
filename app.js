@@ -1243,6 +1243,8 @@ function escStr(str) {
 
 // ===================== INIT =====================
 async function initApp() {
+  if (window.__appInitialized) return;
+  window.__appInitialized = true;
   console.log('[App] 初期化開始');
   loadLocalState();
 
@@ -1267,4 +1269,17 @@ async function initApp() {
   console.log('[App] 初期化完了 / シート数:', state.sheets.length);
 }
 
-window.addEventListener('firebase-ready', () => initApp());
+// firebase-ready イベント（同期的に受け取れた場合）
+window.addEventListener('firebase-ready', () => {
+  if (!window.__appInitialized) initApp();
+});
+
+// type="module" と defer の実行順が保証されないため、
+// window.__db が設定されるまでポーリングして確実に初期化する
+(function waitForFirebase() {
+  if (window.__db) {
+    if (!window.__appInitialized) initApp();
+  } else {
+    setTimeout(waitForFirebase, 50);
+  }
+})();
