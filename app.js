@@ -28,18 +28,18 @@ const DEFAULT_SETTINGS = () => ({
   items: ['項目①', '項目②', '項目③', '項目④', '項目⑤'],
   comments: ['コメント①', 'コメント②', 'コメント③'],
   gradeScale: [
-    { label: 'SS',  value: 5 },
+    { label: 'SS',  value: 5.0 },
     { label: 'S+',  value: 4.5 },
-    { label: 'S',   value: 4 },
-    { label: 'S-',  value: 3.9 },
+    { label: 'S',   value: 4.0 },
+    { label: 'S-',  value: 3.8 },
     { label: 'A+',  value: 3.5 },
-    { label: 'A',   value: 3 },
-    { label: 'A-',  value: 2.9 },
+    { label: 'A',   value: 3.0 },
+    { label: 'A-',  value: 2.8 },
     { label: 'B+',  value: 2.5 },
-    { label: 'B',   value: 2 },
-    { label: 'B-',  value: 1.9 },
+    { label: 'B',   value: 2.0 },
+    { label: 'B-',  value: 1.8 },
     { label: 'C+',  value: 1.5 },
-    { label: 'C',   value: 1 },
+    { label: 'C',   value: 1.0 },
   ],
 });
 
@@ -163,14 +163,31 @@ function gradeValue(label, gradeScale) {
 }
 function valueToLabel(value, gradeScale) {
   if (value === null || value === undefined) return '-';
-  if (!gradeScale.length) return '-';
-  let closest = gradeScale[0];
-  let minDiff = Math.abs(value - gradeScale[0].value);
-  for (const g of gradeScale) {
-    const diff = Math.abs(value - g.value);
-    if (diff < minDiff) { minDiff = diff; closest = g; }
+  // 境界値テーブル（高い順）: lower >= value の最初のラベルを返す
+  // SS:4.75<=x, S+:4.30<=x<4.75, S:3.85<=x<4.30, S-:3.65<=x<3.85
+  // A+:3.25<=x<3.65, A:2.85<=x<3.25, A-:2.65<=x<2.85
+  // B+:2.25<=x<2.65, B:1.85<=x<2.25, B-:1.65<=x<1.85
+  // C+:1.25<=x<1.65, C:x<1.25
+  const boundaries = [
+    { label: 'SS',  lower: 4.75 },
+    { label: 'S+',  lower: 4.30 },
+    { label: 'S',   lower: 3.85 },
+    { label: 'S-',  lower: 3.65 },
+    { label: 'A+',  lower: 3.25 },
+    { label: 'A',   lower: 2.85 },
+    { label: 'A-',  lower: 2.65 },
+    { label: 'B+',  lower: 2.25 },
+    { label: 'B',   lower: 1.85 },
+    { label: 'B-',  lower: 1.65 },
+    { label: 'C+',  lower: 1.25 },
+    { label: 'C',   lower: -Infinity },
+  ];
+  // gradeScaleにないラベルが混入しても動くよう、gradeScaleから存在確認
+  const labels = new Set(gradeScale.map(g => g.label));
+  for (const b of boundaries) {
+    if (labels.has(b.label) && value >= b.lower) return b.label;
   }
-  return closest.label;
+  return gradeScale[gradeScale.length - 1]?.label || '-';
 }
 
 // ===================== SCREEN NAV =====================
