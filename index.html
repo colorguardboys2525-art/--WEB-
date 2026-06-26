@@ -446,36 +446,37 @@
   -->
   <script type="module">
     import { initializeApp }   from 'https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js';
-    import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs }
-      from 'https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js';
+    import {
+      getFirestore,
+      doc, getDoc, setDoc, deleteDoc,
+      collection, getDocs,
+      onSnapshot
+    } from 'https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js';
 
-    // =================================================================
-    // TODO: Firebase コンソール > プロジェクトの設定 > マイアプリ の
-    //       「firebaseConfig」をそのまま下に貼り付けて置き換えてください。
-    // =================================================================
     const firebaseConfig = {
-  apiKey: "AIzaSyDWDiiuEtnPS_oICgLa2ejSLgCfhWeTKEQ",
-  authDomain: "guard-score-web-app.firebaseapp.com",
-  databaseURL: "https://guard-score-web-app-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "guard-score-web-app",
-  storageBucket: "guard-score-web-app.firebasestorage.app",
-  messagingSenderId: "463249604134",
-  appId: "1:463249604134:web:c91f4e2132fd1c41f1f0e7"
-};
-
-    // =================================================================
+      apiKey: "AIzaSyDWDiiuEtnPS_oICgLa2ejSLgCfhWeTKEQ",
+      authDomain: "guard-score-web-app.firebaseapp.com",
+      databaseURL: "https://guard-score-web-app-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "guard-score-web-app",
+      storageBucket: "guard-score-web-app.firebasestorage.app",
+      messagingSenderId: "463249604134",
+      appId: "1:463249604134:web:c91f4e2132fd1c41f1f0e7"
+    };
 
     const fbApp = initializeApp(firebaseConfig);
     const db    = getFirestore(fbApp);
 
-    // app.js (defer) からアクセスできるようグローバルに公開
-    window.__db           = db;
-    window.__fsDoc        = doc;
-    window.__fsGetDoc     = getDoc;
-    window.__fsSetDoc     = setDoc;
-    window.__fsDeleteDoc  = deleteDoc;
-    window.__fsCollection = collection;
-    window.__fsGetDocs    = getDocs;
+    // app.js からアクセスできるようグローバルに公開
+    window.__db             = db;
+    window.__fsDoc          = doc;
+    window.__fsGetDoc       = getDoc;
+    window.__fsSetDoc       = setDoc;
+    window.__fsDeleteDoc    = deleteDoc;
+    window.__fsCollection   = collection;
+    window.__fsGetDocs      = getDocs;
+    window.__fsOnSnapshot   = onSnapshot;
+
+    console.log('[Firebase] SDK 読み込み完了 / projectId:', firebaseConfig.projectId);
 
     // app.js の初期化タイミングを制御するイベントを発火
     window.dispatchEvent(new Event('firebase-ready'));
