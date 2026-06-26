@@ -283,7 +283,7 @@ textarea.comment-input:focus { border-color: var(--secondary); }
 
 /* Draggable/resizable elements on canvas */
 .draft-element {
-  position: absolute; border: 2px dashed #a5b4fc;
+  position: absolute; border: 2px dashed transparent;
   border-radius: 4px; background: rgba(255,255,255,.82);
   cursor: move; z-index: 10; user-select: none;
   display: flex; flex-direction: column;
@@ -325,7 +325,6 @@ textarea.comment-input:focus { border-color: var(--secondary); }
 .preview-element {
   position: absolute; background: #ffffff;
   border-radius: 4px; overflow: hidden; font-size: 12px;
-  border: 1px solid var(--border);
 }
 .preview-text-content { padding: 6px 8px; white-space: pre-wrap; word-break: break-word; }
 
