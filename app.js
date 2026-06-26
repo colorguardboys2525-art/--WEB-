@@ -1,25 +1,26 @@
 /* ===========================
    ガード成績表管理 — app.js
+   データ共有対応版（Firestore リアルタイム同期）
 =========================== */
 
 // ===================== STATE =====================
 let state = {
-  sheets: [],          // [{id, name, createdAt, passHash, settings, candidates}]
-  currentSheetId: null,
-  adminPassHash: null,
-  draftLayout: [],     // [{id, type, x, y, w, h, label, linkCol, fontSize}]
-  draftBgImage: null,  // base64 or null
+  sheets: [],          // Firestore から取得したシート一覧
+  currentSheetId: null, // localStorage で端末ごとに保持
+  adminPassHash: null,  // localStorage で端末ごとに保持
+  draftLayout: [],      // シートごとに Firestore に保存
+  draftBgImage: null,   // シートごとに Firestore に保存
 };
 
 let selectedElementId = null;
-let dragState = null;
-let resizeState = null;
 let currentPdfCandidateIdx = 0;
 let editingLinkElementId = null;
-
-// Pending sheet ids for password-gated actions
 let pendingUnlockSheetId = null;
 let pendingDeleteSheetId = null;
+
+// Firestore のリアルタイムリスナー解除用
+let _unsubscribeSheets = null;
+let _unsubscribeCurrentSheet = null;
 
 // Default settings
 const DEFAULT_SETTINGS = () => ({
@@ -42,10 +43,7 @@ const DEFAULT_SETTINGS = () => ({
   ],
 });
 
-// ===================== PERSISTENCE (Firestore) =====================
-// Firestore ヘルパーは index.html の <script type="module"> が
-// window.__db などとしてグローバルに公開する。
-
+// ===================== FIRESTORE ヘルパー =====================
 function _db()              { return window.__db; }
 function _doc(...args)      { return window.__fsDoc(...args); }
 function _getDoc(ref)       { return window.__fsGetDoc(ref); }
@@ -53,74 +51,112 @@ function _setDoc(ref, d)    { return window.__fsSetDoc(ref, d); }
 function _delDoc(ref)       { return window.__fsDeleteDoc(ref); }
 function _col(...args)      { return window.__fsCollection(...args); }
 function _getDocs(ref)      { return window.__fsGetDocs(ref); }
+function _onSnapshot(ref, cb, err) { return window.__fsOnSnapshot(ref, cb, err); }
 
-// シート1件を Firestore に保存 (fire-and-forget)
+// ===================== LOCAL STORAGE（端末固有データ）=====================
+const LS_ADMIN  = 'guard_adminPassHash';
+const LS_SHEET  = 'guard_currentSheetId';
+
+function lsGet(key)        { try { return localStorage.getItem(key); } catch(e) { return null; } }
+function lsSet(key, val)   { try { localStorage.setItem(key, val); } catch(e) {} }
+function lsDel(key)        { try { localStorage.removeItem(key); } catch(e) {} }
+
+function loadLocalState() {
+  state.adminPassHash  = lsGet(LS_ADMIN)  || null;
+  state.currentSheetId = lsGet(LS_SHEET) || null;
+  console.log('[LocalStorage] adminPassHash:', state.adminPassHash ? '設定済み' : 'なし');
+  console.log('[LocalStorage] currentSheetId:', state.currentSheetId);
+}
+
+function saveLocalState() {
+  if (state.adminPassHash) lsSet(LS_ADMIN, state.adminPassHash);
+  else lsDel(LS_ADMIN);
+  if (state.currentSheetId) lsSet(LS_SHEET, state.currentSheetId);
+  else lsDel(LS_SHEET);
+}
+
+// ===================== FIRESTORE 保存 =====================
+
+// シート1件をFirestoreに保存（draftLayout / draftBgImageも含む）
 function saveSheet(sheet) {
-  if (!_db()) return;
-  _setDoc(_doc(_db(), 'sheets', sheet.id), JSON.parse(JSON.stringify(sheet)))
-    .catch(e => console.error('saveSheet:', e));
+  if (!_db()) { console.warn('[Firestore] db未初期化'); return; }
+  const data = JSON.parse(JSON.stringify(sheet));
+  _setDoc(_doc(_db(), 'sheets', sheet.id), data)
+    .then(() => console.log('[Firestore] シート保存完了:', sheet.id, sheet.name))
+    .catch(e => console.error('[Firestore] saveSheet エラー:', e));
 }
 
-// グローバル設定（adminPassHash / draftLayout / draftBgImage / currentSheetId）を保存
-function saveConfig() {
-  if (!_db()) return;
-  const cfg = {
-    adminPassHash:  state.adminPassHash  ?? null,
-    currentSheetId: state.currentSheetId ?? null,
-    draftLayout:    JSON.parse(JSON.stringify(state.draftLayout)),
-    draftBgImage:   state.draftBgImage   ?? null,
-  };
-  _setDoc(_doc(_db(), 'config', 'meta'), cfg)
-    .catch(e => console.error('saveConfig:', e));
-}
-
-// saveState() を呼んでいた箇所の互換関数：
-// シートの変更後は saveSheet(currentSheet()) を、
-// レイアウト/設定変更後は saveConfig() を呼ぶ。
-// ここでは両方まとめて保存する簡易版。
+// シートの成績・設定・レイアウトをまとめて保存
 function saveState() {
   const sheet = currentSheet();
   if (sheet) saveSheet(sheet);
-  saveConfig();
 }
 
-// 全データを Firestore から読み込む（アプリ起動時のみ）
+// ===================== FIRESTORE 読み込み（初回）=====================
 async function loadState() {
-  if (!_db()) return;
+  if (!_db()) { console.warn('[Firestore] db未初期化'); return; }
 
-  // グローバル設定
-  try {
-    const snap = await _getDoc(_doc(_db(), 'config', 'meta'));
-    if (snap.exists()) {
-      const d = snap.data();
-      state.adminPassHash  = d.adminPassHash  ?? null;
-      state.currentSheetId = d.currentSheetId ?? null;
-      state.draftLayout    = d.draftLayout    ?? [];
-      state.draftBgImage   = d.draftBgImage   ?? null;
-    }
-  } catch(e) { console.error('loadState config:', e); }
-
-  // シート一覧
+  console.log('[Firestore] データ読み込み開始...');
   try {
     const snaps = await _getDocs(_col(_db(), 'sheets'));
     state.sheets = [];
     snaps.forEach(s => state.sheets.push(s.data()));
-    // 作成日降順
     state.sheets.sort((a, b) => (b.createdAt || '') > (a.createdAt || '') ? 1 : -1);
-  } catch(e) { console.error('loadState sheets:', e); }
+    console.log('[Firestore] シート一覧取得:', state.sheets.length, '件');
+    state.sheets.forEach(s => console.log('  -', s.id, s.name));
+  } catch(e) {
+    console.error('[Firestore] loadState エラー:', e);
+  }
+}
+
+// ===================== リアルタイム同期（onSnapshot）=====================
+
+// シート一覧のリアルタイム監視を開始
+function startSheetsListener() {
+  if (!_db()) return;
+  if (_unsubscribeSheets) _unsubscribeSheets(); // 既存リスナーを解除
+
+  console.log('[Firestore] シート一覧リスナー開始');
+  _unsubscribeSheets = _onSnapshot(
+    _col(_db(), 'sheets'),
+    (snapshot) => {
+      console.log('[Firestore] シート一覧更新:', snapshot.docs.length, '件');
+      state.sheets = [];
+      snapshot.forEach(s => state.sheets.push(s.data()));
+      state.sheets.sort((a, b) => (b.createdAt || '') > (a.createdAt || '') ? 1 : -1);
+
+      // 現在のシートも更新
+      const cur = currentSheet();
+      if (cur) {
+        state.draftLayout  = cur.draftLayout  || [];
+        state.draftBgImage = cur.draftBgImage || null;
+      }
+
+      // 現在表示中の画面を再描画
+      const activeScreen = document.querySelector('.screen.active')?.id;
+      if (activeScreen === 'screen-menu') {
+        renderMenu();
+      } else if (activeScreen === 'screen-grade') {
+        buildGradeTable();
+      } else if (activeScreen === 'screen-pdf') {
+        renderPdfScreen();
+      }
+    },
+    (err) => console.error('[Firestore] シート一覧リスナーエラー:', err)
+  );
 }
 
 // ===================== HELPERS =====================
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 function currentSheet() { return state.sheets.find(s => s.id === state.currentSheetId) || null; }
 
-// SHA-256 hash (Web Crypto). Returns hex string. Salted with a fixed app salt.
 async function hashPassword(plain) {
   const salt = 'guard-grade-app::';
   const data = new TextEncoder().encode(salt + plain);
   const buf = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
+
 function gradeValue(label, gradeScale) {
   const g = gradeScale.find(g => g.label === label);
   return g ? g.value : null;
@@ -187,23 +223,24 @@ async function createSheet() {
     passHash: await hashPassword(pass),
     settings: DEFAULT_SETTINGS(),
     candidates: [],
+    draftLayout: [],
+    draftBgImage: null,
+    examDate: '',
   };
   state.sheets.unshift(sheet);
   nameEl.value = '';
   passEl.value = '';
   saveSheet(sheet);
-  saveConfig();
-  renderMenu();
+  // onSnapshot が自動的に renderMenu() を呼ぶ
 }
 
-// --- Open sheet: requires the sheet password ---
 function openSheet(id) {
   const sheet = state.sheets.find(s => s.id === id);
   if (!sheet) return;
-  // Backward compatibility: sheets without a passHash open directly
   if (!sheet.passHash) {
     state.currentSheetId = id;
-    saveState();
+    saveLocalState();
+    _syncDraftFromSheet();
     goToGrade();
     return;
   }
@@ -222,21 +259,30 @@ async function submitUnlock() {
   const h = await hashPassword(pass);
   if (h === sheet.passHash) {
     state.currentSheetId = sheet.id;
-    saveConfig();
+    saveLocalState();
+    _syncDraftFromSheet();
     closeModal('modal-unlock');
     goToGrade();
+    console.log('[Auth] シートを開きました:', sheet.name);
   } else {
     document.getElementById('unlock-error').style.display = '';
     document.getElementById('unlock-pass').value = '';
     document.getElementById('unlock-pass').focus();
+    console.warn('[Auth] パスワード不一致');
   }
 }
 
-// --- Delete sheet: requires the admin password ---
+// シートのdraftLayout/draftBgImageをstateに同期
+function _syncDraftFromSheet() {
+  const sheet = currentSheet();
+  if (!sheet) return;
+  state.draftLayout  = sheet.draftLayout  || [];
+  state.draftBgImage = sheet.draftBgImage || null;
+}
+
 function deleteSheet(id) {
   const sheet = state.sheets.find(s => s.id === id);
   if (!sheet) return;
-  // If admin password is not yet set, prompt to set it up first
   if (!state.adminPassHash) {
     openAdminSetup();
     return;
@@ -254,14 +300,16 @@ async function submitDelete() {
   const h = await hashPassword(pass);
   if (h === state.adminPassHash) {
     const deletedId = pendingDeleteSheetId;
-    state.sheets = state.sheets.filter(s => s.id !== deletedId);
     pendingDeleteSheetId = null;
-    // Firestore からも削除
     if (_db()) _delDoc(_doc(_db(), 'sheets', deletedId))
-      .catch(e => console.error('deleteSheet Firestore:', e));
-    saveConfig();
+      .then(() => console.log('[Firestore] シート削除完了:', deletedId))
+      .catch(e => console.error('[Firestore] deleteSheet エラー:', e));
+    if (state.currentSheetId === deletedId) {
+      state.currentSheetId = null;
+      saveLocalState();
+    }
     closeModal('modal-delete');
-    renderMenu();
+    // onSnapshot が自動的に renderMenu() を呼ぶ
   } else {
     document.getElementById('delete-error').style.display = '';
     document.getElementById('delete-pass').value = '';
@@ -269,7 +317,6 @@ async function submitDelete() {
   }
 }
 
-// --- Admin password setup ---
 function openAdminSetup() {
   document.getElementById('admin-setup-pass').value = '';
   document.getElementById('admin-setup-pass2').value = '';
@@ -285,7 +332,7 @@ async function submitAdminSetup() {
   if (!p1) { errEl.textContent = 'パスワードを入力してください。'; errEl.style.display = ''; return; }
   if (p1 !== p2) { errEl.textContent = 'パスワードが一致しません。'; errEl.style.display = ''; return; }
   state.adminPassHash = await hashPassword(p1);
-  saveConfig();
+  saveLocalState();
   closeModal('modal-admin-setup');
   alert('管理者パスワードを設定しました。もう一度削除ボタンを押すと、このパスワードで削除できます。');
 }
@@ -308,11 +355,11 @@ function renderSettingsSummary() {
 
 function buildGradeTable() {
   const sheet = currentSheet();
+  if (!sheet) return;
   const { settings, candidates } = sheet;
   const thead = document.getElementById('grade-thead');
   const tbody = document.getElementById('grade-tbody');
 
-  // Header
   let hrow = `<tr>
     <th rowspan="2" style="vertical-align:middle">受験者</th>
     <th rowspan="2" style="vertical-align:middle">試験官</th>
@@ -323,7 +370,6 @@ function buildGradeTable() {
   </tr>`;
   thead.innerHTML = hrow;
 
-  // Body
   if (!candidates.length) {
     tbody.innerHTML = `<tr><td colspan="${2 + settings.items.length + 1 + settings.comments.length + 1}" style="text-align:center;padding:32px;color:#9ca3af">受験者を追加ボタン、または一括入力ボタンから追加してください</td></tr>`;
     return;
@@ -331,10 +377,9 @@ function buildGradeTable() {
 
   let html = '';
   candidates.forEach((cand, ci) => {
-    // ensure structure
     if (!cand.examiners) cand.examiners = {};
     settings.examiners.forEach(ex => {
-      if (!cand.examiners[ex]) cand.examiners[ex] = { grades: {}, };
+      if (!cand.examiners[ex]) cand.examiners[ex] = { grades: {} };
       settings.items.forEach(it => {
         if (!cand.examiners[ex].grades[it]) cand.examiners[ex].grades[it] = '';
       });
@@ -342,7 +387,7 @@ function buildGradeTable() {
     if (!cand.comments) cand.comments = {};
     settings.comments.forEach(c => { if (!cand.comments[c]) cand.comments[c] = ''; });
 
-    const rowspan = settings.examiners.length + 1; // examiners + avg row
+    const rowspan = settings.examiners.length + 1;
 
     settings.examiners.forEach((ex, ei) => {
       html += `<tr>`;
@@ -373,7 +418,6 @@ function buildGradeTable() {
       html += `</tr>`;
     });
 
-    // avg row
     html += `<tr class="avg-row">
       <td style="font-weight:700;font-size:12px;color:#065f46">平均評価</td>
       ${settings.items.map(it => {
@@ -400,8 +444,8 @@ function setGrade(ci, ex, it, val) {
   const sheet = currentSheet();
   if (!sheet) return;
   sheet.candidates[ci].examiners[ex].grades[it] = val;
+  console.log('[成績更新]', sheet.candidates[ci].name, ex, it, '->', val);
   saveState();
-  // update avg cells without full re-render
   buildGradeTable();
 }
 
@@ -434,15 +478,14 @@ function calcItemAvg(cand, item, settings) {
   return count ? total / count : null;
 }
 
-// Import candidates
 function openImportModal() { openModal('modal-import'); }
 
-// Add single candidate
 function openAddCandidate() {
   document.getElementById('add-candidate-name').value = '';
   openModal('modal-add-candidate');
   setTimeout(() => document.getElementById('add-candidate-name').focus(), 50);
 }
+
 function addCandidate() {
   const sheet = currentSheet();
   if (!sheet) return;
@@ -460,7 +503,6 @@ function addCandidate() {
   buildGradeTable();
 }
 
-// Delete a candidate
 function deleteCandidate(ci) {
   const sheet = currentSheet();
   if (!sheet) return;
@@ -492,9 +534,8 @@ function importCandidates() {
 }
 
 // ===================== SETTINGS MODAL =====================
-// temp storage while editing
 let tempSettings = null;
-let origSettings = null; // snapshot of names before editing (for remapping)
+let origSettings = null;
 
 function openSettings() {
   const sheet = currentSheet();
@@ -510,17 +551,12 @@ function openSettings() {
 }
 
 function renderSettingsModal() {
-  // Examiners
   renderEditList('examiner-list', tempSettings.examiners, 'examiner');
-  // Items
   renderEditList('item-list', tempSettings.items, 'item');
-  // Comments
   renderEditList('comment-list', tempSettings.comments, 'comment');
-  // Grade scale
   renderGradeScaleList();
 }
 
-// Editable list: each entry is a text input that can be renamed + a remove button
 function renderEditList(containerId, arr, kind) {
   const el = document.getElementById(containerId);
   el.innerHTML = arr.map((v, i) => `
@@ -545,7 +581,6 @@ function renameSetting(kind, i, value) {
   const v = value.trim();
   if (!v) { renderSettingsModal(); return; }
   arr[i] = v;
-  // no full re-render needed; value already in input
 }
 
 function removeSetting(kind, i) {
@@ -596,15 +631,12 @@ function renameGradeScaleLabel(i, value) {
   if (!v) { renderGradeScaleList(); return; }
   tempSettings.gradeScale[i].label = v;
 }
-
 function setGradeScaleValue(i, value) {
   const num = parseFloat(value);
   if (isNaN(num)) { renderGradeScaleList(); return; }
   tempSettings.gradeScale[i].value = num;
 }
-
 function removeGradeScale(i) { tempSettings.gradeScale.splice(i, 1); renderGradeScaleList(); }
-
 function addGradeScale() {
   const label = document.getElementById('new-grade-label').value.trim();
   const value = parseFloat(document.getElementById('new-grade-value').value);
@@ -620,13 +652,10 @@ function saveSettings() {
   const sheet = currentSheet();
   if (!sheet) return;
 
-  // Remap candidate data when names were renamed (only when count is unchanged,
-  // so index-based old->new mapping is reliable).
   if (origSettings) {
     remapCandidateKeys(sheet, 'examiner', origSettings.examiners, tempSettings.examiners);
     remapCandidateKeys(sheet, 'item', origSettings.items, tempSettings.items);
     remapCandidateKeys(sheet, 'comment', origSettings.comments, tempSettings.comments);
-    // Remap text-box links that referenced a renamed comment column
     if (origSettings.comments.length === tempSettings.comments.length) {
       origSettings.comments.forEach((oldName, i) => {
         const newName = tempSettings.comments[i];
@@ -640,16 +669,16 @@ function saveSettings() {
   }
 
   sheet.settings = tempSettings;
+  // draftLayout の変更もシートに反映してから保存
+  sheet.draftLayout = state.draftLayout;
   origSettings = null;
   saveState();
   closeModal('modal-settings');
   renderGradeScreen();
 }
 
-// Rename keys inside each candidate's stored data so existing grades/comments
-// follow a renamed examiner/item/comment column.
 function remapCandidateKeys(sheet, kind, oldArr, newArr) {
-  if (oldArr.length !== newArr.length) return; // counts changed: skip (ambiguous)
+  if (oldArr.length !== newArr.length) return;
   oldArr.forEach((oldName, i) => {
     const newName = newArr[i];
     if (oldName === newName) return;
@@ -685,7 +714,10 @@ function renderPdfScreen() {
   if (!sheet) return;
   document.getElementById('pdf-sheet-title').textContent = sheet.name;
 
-  // Candidate list
+  // シートのdraftLayout/draftBgImageをstateに同期
+  state.draftLayout  = sheet.draftLayout  || [];
+  state.draftBgImage = sheet.draftBgImage || null;
+
   const listEl = document.getElementById('pdf-candidate-list');
   if (!sheet.candidates.length) {
     listEl.innerHTML = '<div class="hint">受験者なし</div>';
@@ -695,14 +727,14 @@ function renderPdfScreen() {
     ).join('');
   }
 
-  // Restore draft bg
-  const bgImg = document.getElementById('draft-bg-img');
+  const bgImg  = document.getElementById('draft-bg-img');
   const prevBg = document.getElementById('preview-bg-img');
   if (state.draftBgImage) {
-    bgImg.src = state.draftBgImage; bgImg.style.display = '';
+    bgImg.src  = state.draftBgImage; bgImg.style.display  = '';
     prevBg.src = state.draftBgImage; prevBg.style.display = '';
   } else {
-    bgImg.style.display = 'none'; prevBg.style.display = 'none';
+    bgImg.style.display  = 'none';
+    prevBg.style.display = 'none';
   }
 
   renderDraftElements();
@@ -737,13 +769,13 @@ function createDraftEl(el) {
   let typeLabel, bodyHtml;
   if (el.type === 'chart') {
     typeLabel = 'チャート';
-    bodyHtml = `<div class="chart-placeholder"><span>&#128202;</span><span>レーダーチャート</span></div>`;
+    bodyHtml  = `<div class="chart-placeholder"><span>&#128202;</span><span>レーダーチャート</span></div>`;
   } else if (el.type === 'name') {
     typeLabel = '受験者名';
-    bodyHtml = `<div class="auto-field-note">&#128100; 受験者の名前が自動で入ります</div>`;
+    bodyHtml  = `<div class="auto-field-note">&#128100; 受験者の名前が自動で入ります</div>`;
   } else if (el.type === 'date') {
     typeLabel = '受験日';
-    bodyHtml = `<div class="auto-field-note">&#128197; 受験日が自動で入ります</div>`;
+    bodyHtml  = `<div class="auto-field-note">&#128197; 受験日が自動で入ります</div>`;
   } else {
     typeLabel = 'テキスト';
     const linked = el.linkCol
@@ -768,20 +800,27 @@ function createDraftEl(el) {
     <div class="resize-handle" data-elid="${el.id}"></div>
   `;
 
-  // Drag
   const header = div.querySelector('.draft-element-header');
   header.addEventListener('mousedown', e => startDrag(e, el.id, div));
-  // Resize
   const handle = div.querySelector('.resize-handle');
   handle.addEventListener('mousedown', e => startResize(e, el.id, div));
 
   return div;
 }
 
+// draftLayout の変更をシートに書き込んでから Firestore に保存
+function saveDraft() {
+  const sheet = currentSheet();
+  if (!sheet) return;
+  sheet.draftLayout  = JSON.parse(JSON.stringify(state.draftLayout));
+  sheet.draftBgImage = state.draftBgImage || null;
+  saveSheet(sheet);
+}
+
 function addTextBox() {
   const el = { id: uid(), type: 'text', x: 40, y: 40, w: 220, h: 80, label: 'テキストボックス', linkCol: '', fontSize: 12 };
   state.draftLayout.push(el);
-  saveState();
+  saveDraft();
   renderDraftElements();
   renderPreview();
 }
@@ -789,7 +828,7 @@ function addTextBox() {
 function addNameBox() {
   const el = { id: uid(), type: 'name', x: 40, y: 40, w: 240, h: 56, label: '受験者名', fontSize: 22 };
   state.draftLayout.push(el);
-  saveState();
+  saveDraft();
   renderDraftElements();
   renderPreview();
 }
@@ -797,7 +836,7 @@ function addNameBox() {
 function addDateBox() {
   const el = { id: uid(), type: 'date', x: 40, y: 110, w: 200, h: 48, label: '受験日', fontSize: 16 };
   state.draftLayout.push(el);
-  saveState();
+  saveDraft();
   renderDraftElements();
   renderPreview();
 }
@@ -805,7 +844,7 @@ function addDateBox() {
 function addChartBox() {
   const el = { id: uid(), type: 'chart', x: 200, y: 200, w: 260, h: 220, label: 'レーダーチャート' };
   state.draftLayout.push(el);
-  saveState();
+  saveDraft();
   renderDraftElements();
   renderPreview();
 }
@@ -817,10 +856,10 @@ function onDraftImageUpload(event) {
   const reader = new FileReader();
   reader.onload = e => {
     state.draftBgImage = e.target.result;
-    saveState();
-    const bgImg = document.getElementById('draft-bg-img');
-    bgImg.src = state.draftBgImage; bgImg.style.display = '';
+    saveDraft();
+    const bgImg  = document.getElementById('draft-bg-img');
     const prevBg = document.getElementById('preview-bg-img');
+    bgImg.src  = state.draftBgImage; bgImg.style.display  = '';
     prevBg.src = state.draftBgImage; prevBg.style.display = '';
   };
   reader.readAsDataURL(file);
@@ -829,14 +868,12 @@ function onDraftImageUpload(event) {
 
 function clearDraft() {
   if (!confirm('下書きのすべての要素を削除しますか？')) return;
-  state.draftLayout = [];
+  state.draftLayout  = [];
   state.draftBgImage = null;
-  saveState();
+  saveDraft();
   renderDraftElements();
-  const bgImg = document.getElementById('draft-bg-img');
-  bgImg.style.display = 'none';
-  const prevBg = document.getElementById('preview-bg-img');
-  prevBg.style.display = 'none';
+  document.getElementById('draft-bg-img').style.display  = 'none';
+  document.getElementById('preview-bg-img').style.display = 'none';
   renderPreview();
 }
 
@@ -851,14 +888,13 @@ function openElementEdit(elId) {
     const sel = document.getElementById('tb-link-col');
     sel.innerHTML = `<option value="">（未紐づけ）</option>` +
       comments.map(c => `<option value="${esc(c)}" ${c === el.linkCol ? 'selected' : ''}>${esc(c)}</option>`).join('');
-    document.getElementById('tb-label').value = el.label || '';
+    document.getElementById('tb-label').value    = el.label    || '';
     document.getElementById('tb-fontsize').value = el.fontSize || 12;
     openModal('modal-link');
   } else if (el.type === 'chart') {
     document.getElementById('chart-label').value = el.label || '';
     openModal('modal-chart-link');
   } else {
-    // name / date auto field
     const titleEl = document.getElementById('field-modal-title');
     titleEl.textContent = el.type === 'name' ? '受験者名フィールド設定' : '受験日フィールド設定';
     document.getElementById('field-fontsize').value = el.fontSize || 16;
@@ -882,7 +918,7 @@ function saveFieldEdit() {
     const sheet = currentSheet();
     if (sheet) sheet.examDate = document.getElementById('field-exam-date').value;
   }
-  saveState();
+  saveDraft();
   closeModal('modal-field');
   renderDraftElements();
   renderPreview();
@@ -891,10 +927,10 @@ function saveFieldEdit() {
 function saveTextBoxLink() {
   const el = state.draftLayout.find(e => e.id === editingLinkElementId);
   if (!el) return;
-  el.label = document.getElementById('tb-label').value;
-  el.linkCol = document.getElementById('tb-link-col').value;
+  el.label    = document.getElementById('tb-label').value;
+  el.linkCol  = document.getElementById('tb-link-col').value;
   el.fontSize = parseInt(document.getElementById('tb-fontsize').value) || 12;
-  saveState();
+  saveDraft();
   closeModal('modal-link');
   renderDraftElements();
   renderPreview();
@@ -904,7 +940,7 @@ function saveChartLink() {
   const el = state.draftLayout.find(e => e.id === editingLinkElementId);
   if (!el) return;
   el.label = document.getElementById('chart-label').value;
-  saveState();
+  saveDraft();
   closeModal('modal-chart-link');
   renderDraftElements();
   renderPreview();
@@ -912,7 +948,7 @@ function saveChartLink() {
 
 function deleteElement() {
   state.draftLayout = state.draftLayout.filter(e => e.id !== editingLinkElementId);
-  saveState();
+  saveDraft();
   closeModal('modal-link');
   closeModal('modal-chart-link');
   closeModal('modal-field');
@@ -928,48 +964,48 @@ function startDrag(e, elId, div) {
   document.querySelectorAll('.draft-element').forEach(d => d.classList.remove('selected'));
   div.classList.add('selected');
 
-  const el = state.draftLayout.find(e2 => e2.id === elId);
+  const el     = state.draftLayout.find(e2 => e2.id === elId);
   const canvas = document.getElementById('a4-canvas').getBoundingClientRect();
   const startX = e.clientX - canvas.left - el.x;
-  const startY = e.clientY - canvas.top - el.y;
+  const startY = e.clientY - canvas.top  - el.y;
 
   function onMove(ev) {
     const x = Math.max(0, Math.min(794 - el.w, ev.clientX - canvas.left - startX));
-    const y = Math.max(0, Math.min(1123 - el.h, ev.clientY - canvas.top - startY));
+    const y = Math.max(0, Math.min(1123 - el.h, ev.clientY - canvas.top  - startY));
     el.x = Math.round(x); el.y = Math.round(y);
     div.style.left = el.x + 'px'; div.style.top = el.y + 'px';
   }
   function onUp() {
-    saveState();
+    saveDraft();
     renderPreview();
     document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('mouseup',   onUp);
   }
   document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
+  document.addEventListener('mouseup',   onUp);
 }
 
 // --- Resize ---
 function startResize(e, elId, div) {
   e.preventDefault(); e.stopPropagation();
-  const el = state.draftLayout.find(e2 => e2.id === elId);
-  const canvas = document.getElementById('a4-canvas').getBoundingClientRect();
+  const el     = state.draftLayout.find(e2 => e2.id === elId);
   const startX = e.clientX; const startY = e.clientY;
-  const startW = el.w; const startH = el.h;
+  const startW = el.w;      const startH = el.h;
 
   function onMove(ev) {
-    el.w = Math.max(80, Math.min(794 - el.x, startW + ev.clientX - startX));
-    el.h = Math.max(40, Math.min(1123 - el.y, startH + ev.clientY - startY));
-    div.style.width = el.w + 'px'; div.style.height = el.h + 'px';
+    el.w = Math.max(80,  Math.min(794  - el.x, startW + ev.clientX - startX));
+    el.h = Math.max(40,  Math.min(1123 - el.y, startH + ev.clientY - startY));
+    div.style.width  = el.w + 'px';
+    div.style.height = el.h + 'px';
   }
   function onUp() {
-    saveState();
+    saveDraft();
     renderPreview();
     document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('mouseup',   onUp);
   }
   document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
+  document.addEventListener('mouseup',   onUp);
 }
 
 // --- Preview ---
@@ -990,7 +1026,6 @@ function renderPreview() {
   container.appendChild(buildResultFooter(cand, sheet.settings));
 }
 
-// Build a single rendered element (used by preview + print pages).
 function buildPreviewElement(el, cand, sheet) {
   const div = document.createElement('div');
   div.className = 'preview-element';
@@ -1005,9 +1040,9 @@ function buildPreviewElement(el, cand, sheet) {
     const dateText = sheet.examDate || '';
     div.innerHTML = `<div class="preview-text-content auto-value" style="font-size:${el.fontSize || 16}px">${esc(dateText)}</div>`;
   } else {
-    // radar chart
     const canvas = document.createElement('canvas');
-    canvas.width = el.w - 16; canvas.height = el.h - 16;
+    canvas.width  = el.w - 16;
+    canvas.height = el.h - 16;
     div.innerHTML = `<div class="preview-chart-content"></div>`;
     div.querySelector('.preview-chart-content').appendChild(canvas);
     drawRadarChart(canvas, cand, sheet.settings);
@@ -1016,17 +1051,16 @@ function buildPreviewElement(el, cand, sheet) {
 }
 
 function drawRadarChart(canvas, cand, settings) {
-  const ctx = canvas.getContext('2d');
+  const ctx   = canvas.getContext('2d');
   const items = settings.items;
-  const n = items.length;
-  const cx = canvas.width / 2;
-  const cy = canvas.height / 2;
-  const r = Math.min(cx, cy) - 24;
+  const n     = items.length;
+  const cx    = canvas.width  / 2;
+  const cy    = canvas.height / 2;
+  const r     = Math.min(cx, cy) - 24;
   const maxVal = Math.max(...settings.gradeScale.map(g => g.value));
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Grid
   const steps = 5;
   for (let s = 1; s <= steps; s++) {
     ctx.beginPath();
@@ -1040,7 +1074,6 @@ function drawRadarChart(canvas, cand, settings) {
     ctx.closePath(); ctx.stroke();
   }
 
-  // Spokes
   for (let i = 0; i < n; i++) {
     const angle = (2 * Math.PI * i / n) - Math.PI / 2;
     ctx.beginPath(); ctx.strokeStyle = '#d1d5db'; ctx.lineWidth = 1;
@@ -1049,7 +1082,6 @@ function drawRadarChart(canvas, cand, settings) {
     ctx.stroke();
   }
 
-  // Labels
   ctx.fillStyle = '#374151'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
   for (let i = 0; i < n; i++) {
     const angle = (2 * Math.PI * i / n) - Math.PI / 2;
@@ -1058,7 +1090,6 @@ function drawRadarChart(canvas, cand, settings) {
     ctx.fillText(items[i], lx, ly + 4);
   }
 
-  // Data polygon
   const scores = items.map(it => {
     const avg = calcItemAvgDirect(cand, it, settings);
     return avg !== null ? avg : 0;
@@ -1074,7 +1105,6 @@ function drawRadarChart(canvas, cand, settings) {
   }
   ctx.closePath(); ctx.fill(); ctx.stroke();
 
-  // Dots
   ctx.fillStyle = '#00B050';
   for (let i = 0; i < n; i++) {
     const angle = (2 * Math.PI * i / n) - Math.PI / 2;
@@ -1095,13 +1125,12 @@ function calcItemAvgDirect(cand, item, settings) {
   return count ? total / count : null;
 }
 
-// Build the result footer strip showing each item's average value + grade label.
 function buildResultFooter(cand, settings) {
-  const div = document.createElement('div');
+  const div   = document.createElement('div');
   div.className = 'page-result-footer';
   const cells = settings.items.map(it => {
-    const avg = calcItemAvgDirect(cand, it, settings);
-    const label = avg !== null ? valueToLabel(avg, settings.gradeScale) : '-';
+    const avg       = calcItemAvgDirect(cand, it, settings);
+    const label     = avg !== null ? valueToLabel(avg, settings.gradeScale) : '-';
     const scoreText = avg !== null ? avg.toFixed(2) : '-';
     return `<div class="prf-item">` +
              `<span class="prf-name">${esc(it)}</span>` +
@@ -1131,13 +1160,11 @@ function renderPrintScreen() {
 
   if (printActiveIdx >= sheet.candidates.length) printActiveIdx = 0;
 
-  // Candidate selector chips
   const listEl = document.getElementById('print-candidate-list');
   listEl.innerHTML = sheet.candidates.map((c, i) =>
     `<button class="print-chip ${i === printActiveIdx ? 'active' : ''}" onclick="selectPrintCandidate(${i})">${esc(c.name)}</button>`
   ).join('');
 
-  // Build one A4 page per candidate
   const stage = document.getElementById('print-stage');
   stage.innerHTML = '';
   sheet.candidates.forEach((cand, i) => {
@@ -1165,12 +1192,10 @@ function selectPrintCandidate(i) {
   document.querySelectorAll('.print-page').forEach(p => {
     p.classList.toggle('active-page', Number(p.dataset.idx) === i);
   });
-  // scroll the chosen page into view
   const active = document.querySelector('.print-page.active-page');
   if (active) active.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// Print only the currently selected candidate
 function printOne() {
   document.body.classList.add('print-one');
   document.body.classList.remove('print-all');
@@ -1178,7 +1203,6 @@ function printOne() {
   setTimeout(() => document.body.classList.remove('print-one'), 300);
 }
 
-// Print all candidates (one A4 page each)
 function printAll() {
   document.body.classList.add('print-all');
   document.body.classList.remove('print-one');
@@ -1187,7 +1211,7 @@ function printAll() {
 }
 
 // ===================== MODAL HELPERS =====================
-function openModal(id) { document.getElementById(id).classList.add('open'); }
+function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 function closeModalOutside(e, id) { if (e.target.id === id) closeModal(id); }
 
@@ -1200,14 +1224,21 @@ function escStr(str) {
 }
 
 // ===================== INIT =====================
-// Firebase SDK の準備完了イベントを待ってから起動する。
-// index.html の <script type="module"> が firebase-ready を dispatch する。
 async function initApp() {
+  console.log('[App] 初期化開始');
+  loadLocalState();
+
   showScreen('menu');
   document.getElementById('sheet-list').innerHTML =
     '<div class="empty-state"><p>読み込み中...</p></div>';
+
   await loadState();
+
+  // リアルタイムリスナー開始（以降の変更は自動で反映）
+  startSheetsListener();
+
   renderMenu();
+  console.log('[App] 初期化完了 / シート数:', state.sheets.length);
 }
 
 window.addEventListener('firebase-ready', () => initApp());
