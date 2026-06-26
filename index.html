@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<!--
+  ================================================================
+  公開手順（GitHub Pages + Firebase）
+  ================================================================
+
+  【STEP 1】Firebase プロジェクトを作る
+    1. https://console.firebase.google.com/ を開く
+    2. 「プロジェクトを追加」→ 名前を入力して作成
+    3. 左メニュー「Firestore Database」→「データベースを作成」
+       ・本番モードで作成（セキュリティルールは後で設定）
+    4. 左メニュー「プロジェクトの設定（歯車）」→「マイアプリ」
+       ・「</>」(Web) を追加 → アプリ名を入力 → 登録
+       ・表示された firebaseConfig をコピーしておく
+
+  【STEP 2】このファイルに firebaseConfig を貼り付ける
+    ・下の <script type="module"> 内の firebaseConfig を
+      コピーした内容で丸ごと置き換える
+
+  【STEP 3】Firestore セキュリティルールを設定する
+    ・Firebase コンソール → Firestore → 「ルール」タブ
+    ・firestore.rules の内容を貼り付けて「公開」
+
+  【STEP 4】GitHub Pages で公開する
+    1. GitHub で新しいリポジトリを作成（Public または Private）
+    2. app/ フォルダの中身（index.html, style.css, app.js）を
+       リポジトリのルートに配置してプッシュ
+    3. GitHub リポジトリ → Settings → Pages
+       ・Source: Deploy from a branch → main ブランチ / root
+       ・「Save」→ 数分後に URL が発行される
+    4. 発行された URL を知っている人だけが使える
+
+  【注意】
+    ・firebaseConfig の apiKey は GitHub に公開されますが、
+      Firestore ルールで読み書きを制限しているため問題ありません。
+    ・パスワード保護はアプリ内で行っているため、
+      URL を知っていてもシートの閲覧にはパスワードが必要です。
+  ================================================================
+-->
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ガード成績表管理</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ==================== SCREEN 1: シート一覧メニュー ==================== -->
+  <div id="screen-menu" class="screen active">
+    <div class="header-bar">
+      <div class="header-logo">
+        <span class="logo-icon">&#9733;</span>
+        <span class="logo-text">ガード成績表管理</span>
+      </div>
+    </div>
+
+    <div class="menu-container">
+      <h2 class="section-title">シート一覧</h2>
+
+      <div class="new-sheet-card">
+        <div class="new-sheet-card-inner">
+          <h3>新規シート作成</h3>
+          <div class="form-row">
+            <label for="new-sheet-name">タイトル</label>
+            <input type="text" id="new-sheet-name" placeholder="例：2024年度 本隊試験" />
+          </div>
+          <div class="form-row">
+            <label for="new-sheet-pass">パスワード</label>
+            <input type="password" id="new-sheet-pass" placeholder="このシートを開くためのパスワード" autocomplete="new-password" />
+          </div>
+          <p class="hint">※ パスワードを知っている人だけがこのシートを開けます。設定したパスワードは忘れないようにしてください。</p>
+          <button class="btn btn-primary" onclick="createSheet()">シートを作成</button>
+        </div>
+      </div>
+
+      <div class="sheet-list" id="sheet-list">
+        <!-- dynamically populated -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== SCREEN 2: 成績入力表 ==================== -->
+  <div id="screen-grade" class="screen">
+    <div class="header-bar">
+      <div class="header-logo">
+        <span class="logo-icon">&#9733;</span>
+        <span id="grade-sheet-title" class="logo-text">シート名</span>
+      </div>
+      <button class="btn btn-ghost" onclick="goToMenu()">&#8592; シート一覧へ戻る</button>
+      <button class="btn btn-primary" onclick="goToPdf()">次へ（PDF出力編集）&#8594;</button>
+    </div>
+
+    <div class="grade-container">
+      <!-- Settings panel -->
+      <div class="settings-bar">
+        <button class="btn btn-outline" onclick="openSettings()">&#9881; 設定</button>
+        <div class="settings-info" id="settings-summary"></div>
+        <div style="flex:1"></div>
+        <button class="btn btn-outline" onclick="openAddCandidate()">&#43; 受験者を追加</button>
+        <button class="btn btn-secondary" onclick="openImportModal()">&#43; 受験者を一括入力</button>
+      </div>
+
+      <!-- Grade table -->
+      <div class="table-wrapper">
+        <table class="grade-table" id="grade-table">
+          <thead id="grade-thead"></thead>
+          <tbody id="grade-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Bottom nav -->
+      <div class="bottom-nav">
+        <button class="btn btn-primary btn-wide" onclick="goToPdf()">次へ（PDF出力編集）&#8594;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== SCREEN 3: PDF出力編集 ==================== -->
+  <div id="screen-pdf" class="screen">
+    <div class="header-bar">
+      <div class="header-logo">
+        <span class="logo-icon">&#9733;</span>
+        <span id="pdf-sheet-title" class="logo-text">シート名</span>
+      </div>
+      <button class="btn btn-ghost" onclick="goToGrade()">&#8592; 成績入力表へ戻る</button>
+    </div>
+
+    <div class="pdf-container">
+      <div class="pdf-sidebar">
+        <h3 class="sidebar-title">受験者</h3>
+        <div id="pdf-candidate-list" class="candidate-list"></div>
+        <div class="sidebar-bottom">
+          <button class="btn btn-primary btn-full" onclick="goToPrint()">&#128424; 印刷プレビューへ &#8594;</button>
+        </div>
+      </div>
+
+      <div class="pdf-main">
+        <!-- Draft area -->
+        <div class="pdf-draft-area">
+          <div class="pdf-draft-toolbar">
+            <span class="toolbar-label">下書きレイアウト</span>
+            <button class="tool-btn" onclick="addTextBox()" title="テキストボックス追加">&#9707; テキストボックス追加</button>
+            <button class="tool-btn" onclick="addNameBox()" title="受験者名追加">&#128100; 受験者名</button>
+            <button class="tool-btn" onclick="addDateBox()" title="受験日追加">&#128197; 受験日</button>
+            <button class="tool-btn" onclick="addChartBox()" title="チャート追加">&#128202; チャートエリア追加</button>
+            <button class="tool-btn" onclick="uploadDraftImage()" title="背景画像アップロード">&#128444; 背景画像</button>
+            <input type="file" id="draft-img-upload" accept="image/*" style="display:none" onchange="onDraftImageUpload(event)" />
+            <button class="tool-btn danger" onclick="clearDraft()" title="クリア">&#128465; クリア</button>
+          </div>
+
+          <div class="a4-canvas" id="a4-canvas">
+            <img id="draft-bg-img" class="draft-bg" src="" alt="" style="display:none" />
+            <div id="draft-elements"></div>
+          </div>
+        </div>
+
+        <!-- Preview area -->
+        <div class="pdf-preview-area" id="pdf-preview-area">
+          <div class="preview-header">
+            <span class="toolbar-label">プレビュー</span>
+            <span id="preview-candidate-name" class="preview-name"></span>
+          </div>
+          <div class="a4-canvas preview-canvas" id="a4-preview">
+            <img id="preview-bg-img" class="draft-bg" src="" alt="" style="display:none" />
+            <div id="preview-elements"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Floating export button (always visible while scrolling) -->
+    <button class="floating-export" onclick="goToPrint()" title="印刷プレビューへ">
+      &#128424;<span>印刷プレビュー</span>
+    </button>
+  </div>
+
+  <!-- ==================== SCREEN 4: 印刷プレビュー（完成品） ==================== -->
+  <div id="screen-print" class="screen">
+    <div class="print-toolbar no-print">
+      <div class="header-logo">
+        <span class="logo-icon">&#9733;</span>
+        <span id="print-sheet-title" class="logo-text" style="color:#fff">印刷プレビュー</span>
+      </div>
+      <div style="flex:1"></div>
+      <button class="btn btn-ghost" onclick="goToPdf()">&#8592; 編集へ戻る</button>
+      <button class="btn btn-secondary" onclick="printOne()">&#128424; 表示中の1名を印刷</button>
+      <button class="btn btn-primary" onclick="printAll()">&#128424; 全員まとめて印刷</button>
+    </div>
+
+    <div class="print-candidate-bar no-print">
+      <span class="toolbar-label">表示する受験者：</span>
+      <div id="print-candidate-list" class="print-candidate-list"></div>
+    </div>
+
+    <div class="print-stage" id="print-stage">
+      <!-- A4 pages injected here -->
+    </div>
+  </div>
+
+  <!-- ==================== MODALS ==================== -->
+
+  <!-- Settings Modal -->
+  <div class="modal-overlay" id="modal-settings" onclick="closeModalOutside(event,'modal-settings')">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>設定</h3>
+        <button class="modal-close" onclick="closeModal('modal-settings')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-section">
+          <h4>試験官</h4>
+          <p class="hint">名称を直接編集できます。&#10005;で削除します。</p>
+          <div id="examiner-list" class="edit-list"></div>
+          <div class="add-row">
+            <input type="text" id="new-examiner" placeholder="試験官名を入力" />
+            <button class="btn btn-sm btn-primary" onclick="addExaminer()">追加</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h4>項目（項目①～⑤など）</h4>
+          <p class="hint">名称を直接編集できます。&#10005;で削除します。</p>
+          <div id="item-list" class="edit-list"></div>
+          <div class="add-row">
+            <input type="text" id="new-item" placeholder="項目名を入力" />
+            <button class="btn btn-sm btn-primary" onclick="addItem()">追加</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h4>コメント列（コメント①～③など）</h4>
+          <p class="hint">名称を直接編集できます。&#10005;で削除します。</p>
+          <div id="comment-list" class="edit-list"></div>
+          <div class="add-row">
+            <input type="text" id="new-comment" placeholder="コメント列名を入力" />
+            <button class="btn btn-sm btn-primary" onclick="addComment()">追加</button>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h4>評価・成績（SS～C など）</h4>
+          <p class="hint">評価名と数値を直接編集できます。&#10005;で削除します。</p>
+          <div class="grade-scale-list" id="grade-scale-list"></div>
+          <div class="add-row">
+            <input type="text" id="new-grade-label" placeholder="評価 (例: SS)" style="width:80px" />
+            <input type="number" id="new-grade-value" placeholder="数値" style="width:70px" step="0.1" />
+            <button class="btn btn-sm btn-primary" onclick="addGradeScale()">追加</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="saveSettings()">保存</button>
+        <button class="btn btn-ghost" onclick="closeModal('modal-settings')">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Candidate Modal -->
+  <div class="modal-overlay" id="modal-add-candidate" onclick="closeModalOutside(event,'modal-add-candidate')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>受験者を追加</h3>
+        <button class="modal-close" onclick="closeModal('modal-add-candidate')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label>名前</label>
+          <input type="text" id="add-candidate-name" placeholder="受験者の名前"
+            onkeydown="if(event.key==='Enter')addCandidate()" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="addCandidate()">追加</button>
+        <button class="btn btn-ghost" onclick="closeModal('modal-add-candidate')">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Modal -->
+  <div class="modal-overlay" id="modal-import" onclick="closeModalOutside(event,'modal-import')">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>受験者を一括入力</h3>
+        <button class="modal-close" onclick="closeModal('modal-import')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">受験者の名前を1行に1人ずつ入力してください。</p>
+        <textarea id="import-textarea" rows="12" placeholder="例：&#10;太朗くん&#10;ゆうくん&#10;さくらさん"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="importCandidates()">入力</button>
+        <button class="btn btn-ghost" onclick="closeModal('modal-import')">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Text Box Link Modal -->
+  <div class="modal-overlay" id="modal-link" onclick="closeModalOutside(event,'modal-link')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>テキストボックス設定</h3>
+        <button class="modal-close" onclick="closeModal('modal-link')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label>ラベル</label>
+          <input type="text" id="tb-label" placeholder="例：コメント①" />
+        </div>
+        <div class="link-section">
+          <div class="link-section-title">&#128279; コメント列と紐づけ</div>
+          <p class="hint">このテキストボックスに、どのコメント列の内容を表示するか選びます。</p>
+          <select id="tb-link-col" class="link-select-big"></select>
+        </div>
+        <div class="form-row">
+          <label>フォントサイズ</label>
+          <input type="number" id="tb-fontsize" value="12" min="8" max="32" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="saveTextBoxLink()">保存</button>
+        <button class="btn btn-danger" onclick="deleteElement()">削除</button>
+        <button class="btn btn-ghost" onclick="closeModal('modal-link')">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart Box Link Modal -->
+  <div class="modal-overlay" id="modal-chart-link" onclick="closeModalOutside(event,'modal-chart-link')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>チャートエリア設定</h3>
+        <button class="modal-close" onclick="closeModal('modal-chart-link')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label>ラベル</label>
+          <input type="text" id="chart-label" placeholder="例：レーダーチャート" />
+        </div>
+        <p class="hint">受験者の平均評価（全項目）がレーダーチャートで表示されます。</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="saveChartLink()">保存</button>
+        <button class="btn btn-danger" onclick="deleteElement()">削除</button>
+        <button class="btn btn-ghost" onclick="closeModal('modal-chart-link')">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auto Field (name/date) Modal -->
+  <div class="modal-overlay" id="modal-field" onclick="closeModalOutside(event,'modal-field')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="field-modal-title">フィールド設定</h3>
+        <button class="modal-close" onclick="closeModal('modal-field')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row" id="field-date-row" style="display:none">
+          <label>受験日</label>
+          <input type="text" id="field-exam-date" placeholder="例：2025年4月1日" />
+        </div>
+        <div class="form-row">
+          <label>フォントサイズ</label>
+          <input type="number" id="field-fontsize" value="16" min="8" max="48" />
+        </div>
+        <p class="hint">受験者名・受験日は、各受験者ごとに自動で入ります。</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="saveFieldEdit()">保存</button>
+        <button class="btn btn-danger" onclick="deleteElement()">削除</button>
+        <button class="btn btn-ghost" onclick="closeModal('modal-field')">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sheet Unlock (Password) Modal -->
+  <div class="modal-overlay" id="modal-unlock" onclick="closeModalOutside(event,'modal-unlock')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>&#128274; パスワード入力</h3>
+        <button class="modal-close" onclick="closeModal('modal-unlock')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" id="unlock-target-name" style="font-weight:700;color:var(--text)"></p>
+        <div class="form-row">
+          <label>パスワード</label>
+          <input type="password" id="unlock-pass" placeholder="シートのパスワード" autocomplete="off"
+            onkeydown="if(event.key==='Enter')submitUnlock()" />
+        </div>
+        <p class="hint" id="unlock-error" style="color:var(--danger);display:none">パスワードが違います。</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="submitUnlock()">開く</button>
+        <button class="btn btn-ghost" onclick="closeModal('modal-unlock')">キャンセル</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete (Admin Password) Modal -->
+  <div class="modal-overlay" id="modal-delete" onclick="closeModalOutside(event,'modal-delete')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>&#128465; シート削除</h3>
+        <button class="modal-close" onclick="closeModal('modal-delete')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" id="delete-target-name" style="font-weight:700;color:var(--text)"></p>
+        <p class="hint">削除するには<strong>管理者パスワード</strong>を入力してください。</p>
+        <div class="form-row">
+          <label>管理者PW</label>
+          <input type="password" id="delete-pass" placeholder="管理者パスワード" autocomplete="off"
+            onkeydown="if(event.key==='Enter')submitDelete()" />
+        </div>
+        <p class="hint" id="delete-error" style="color:var(--danger);display:none">管理者パスワードが違います。</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger" onclick="submitDelete()">削除する</button>
+        <button class="btn btn-ghost" onclick="closeModal('modal-delete')">キャンセル</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Password Setup Modal (first run) -->
+  <div class="modal-overlay" id="modal-admin-setup" onclick="closeModalOutside(event,'modal-admin-setup')">
+    <div class="modal modal-sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>&#9881; 管理者パスワード設定</h3>
+      </div>
+      <div class="modal-body">
+        <p class="hint">シートの削除には管理者パスワードが必要です。最初に管理者パスワードを設定してください。</p>
+        <div class="form-row">
+          <label>管理者PW</label>
+          <input type="password" id="admin-setup-pass" placeholder="管理者パスワード" autocomplete="new-password" />
+        </div>
+        <div class="form-row">
+          <label>確認</label>
+          <input type="password" id="admin-setup-pass2" placeholder="もう一度入力" autocomplete="new-password" />
+        </div>
+        <p class="hint" id="admin-setup-error" style="color:var(--danger);display:none"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="submitAdminSetup()">設定する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== Firebase SDK (CDN) =====================
+       ↓ ここに自分の Firebase プロジェクトの設定を貼り付けてください ↓
+  -->
+  <script type="module">
+    import { initializeApp }   from 'https://www.gstatic.com/firebasejs/11.9.0/firebase-app.js';
+    import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs }
+      from 'https://www.gstatic.com/firebasejs/11.9.0/firebase-firestore.js';
+
+    // =================================================================
+    // TODO: Firebase コンソール > プロジェクトの設定 > マイアプリ の
+    //       「firebaseConfig」をそのまま下に貼り付けて置き換えてください。
+    // =================================================================
+    const firebaseConfig = {
+  apiKey: "AIzaSyDWDiiuEtnPS_oICgLa2ejSLgCfhWeTKEQ",
+  authDomain: "guard-score-web-app.firebaseapp.com",
+  databaseURL: "https://guard-score-web-app-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "guard-score-web-app",
+  storageBucket: "guard-score-web-app.firebasestorage.app",
+  messagingSenderId: "463249604134",
+  appId: "1:463249604134:web:c91f4e2132fd1c41f1f0e7"
+};
+
+    // =================================================================
+
+    const fbApp = initializeApp(firebaseConfig);
+    const db    = getFirestore(fbApp);
+
+    // app.js (defer) からアクセスできるようグローバルに公開
+    window.__db           = db;
+    window.__fsDoc        = doc;
+    window.__fsGetDoc     = getDoc;
+    window.__fsSetDoc     = setDoc;
+    window.__fsDeleteDoc  = deleteDoc;
+    window.__fsCollection = collection;
+    window.__fsGetDocs    = getDocs;
+
+    // app.js の初期化タイミングを制御するイベントを発火
+    window.dispatchEvent(new Event('firebase-ready'));
+  </script>
+  <script src="app.js" defer></script>
+</body>
+</html>
